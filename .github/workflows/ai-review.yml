@@ -19,7 +19,7 @@ jobs:
       - name: AI Reviewer
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           COMMENTS_URL: ${{ github.event.pull_request.comments_url }}
