@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write # Necessário para comentar no PR
+      pull-requests: write
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -17,16 +17,50 @@ jobs:
           fetch-depth: 0
 
       - name: AI Reviewer
-        uses: anc95/ChatGPT-CodeReview@main # Action que orquestra a revisão
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.AI_API_KEY }} # Funciona com Gemini via proxy ou OpenAI nativo
-          LANGUAGE: Portuguese
-          MODEL: gpt-4o # Ajuste para o modelo configurado
-          PROMPT: |
-            Aja como um Engenheiro de Segurança Sênior (DevSecOps). 
-            Analise o DIFF deste Pull Request buscando:
-            1. Vulnerabilidades OWASP Top 10 (especialmente SQL Injection e Insecure Deserialization).
-            2. Code Smells e complexidade ciclomática desnecessária.
-            3. Aderência às melhores práticas de Java 25 e Spring Boot 3.4.
-            4. Responda com comentários técnicos e construtivos diretamente nas linhas do código afetado.
+          GEMINI_API_KEY: ${{ secrets.AI_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          COMMENTS_URL: ${{ github.event.pull_request.comments_url }}
+        run: |
+          set -euo pipefail
+
+          DIFF="$(curl -sS -L \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github.v3.diff" \
+            "https://api.github.com/repos/${REPO}/pulls/${PR_NUMBER}")"
+
+          DIFF_TRIMMED="$(printf "%s" "$DIFF" | head -c 180000)"
+
+          PROMPT=$'Aja como um Engenheiro de Segurança Sênior (DevSecOps).\nAnalise o DIFF deste Pull Request buscando:\n1. Vulnerabilidades OWASP Top 10 (especialmente SQL Injection e Insecure Deserialization).\n2. Code Smells e complexidade ciclomática desnecessária.\n3. Aderência às melhores práticas de Java 25 e Spring Boot 3.4.\n4. Responda com comentários técnicos e construtivos.\n\nDIFF:\n'
+
+          REQUEST_JSON="$(jq -n --arg p "$PROMPT" --arg d "$DIFF_TRIMMED" '{
+            contents: [
+              { role: "user", parts: [ { text: ($p + $d) } ] }
+            ],
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: 2048
+            }
+          }')"
+
+          RESPONSE="$(curl -sS -L \
+            -H "Content-Type: application/json" \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${GEMINI_API_KEY}" \
+            -d "$REQUEST_JSON")"
+
+          REVIEW_TEXT="$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')"
+
+          if [ -z "$REVIEW_TEXT" ]; then
+            REVIEW_TEXT="Não foi possível gerar o review. Resposta do modelo:\n\n$(echo "$RESPONSE" | jq -c '.')"
+          fi
+
+          BODY=$'## AI Code Review (Gemini)\n\n'"$REVIEW_TEXT"
+
+          curl -sS -L \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg body "$BODY" '{body: $body}')" \
+            "$COMMENTS_URL"
